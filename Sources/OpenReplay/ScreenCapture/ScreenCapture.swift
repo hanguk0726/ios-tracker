@@ -105,6 +105,8 @@ open class ScreenshotManager {
     }
     
     func startTakingScreenshots(every interval: TimeInterval) {
+        // Start and resume both land here: re-report the orientation with the first frame.
+        lastReportedOrientation = -1
         takeScreenshot()
 
         timer?.orInvalidate()
@@ -136,11 +138,32 @@ open class ScreenshotManager {
             .first { $0.isKeyWindow }
     }
 
+    // The replayer rotates its phone shell only on an "orientation" performance event of 3 or 4
+    // (UIDeviceOrientation landscape values). Report the orientation of what is captured — the
+    // window's interface orientation — not the physical device orientation: an app that forces
+    // landscape on a portrait-held, flat or rotation-locked phone otherwise replays landscape
+    // frames squashed inside a portrait shell (and a tilted phone on a portrait-only screen the
+    // other way round). Main thread only (window scene geometry).
+    private var lastReportedOrientation: Int = -1
+
+    private func reportOrientationIfChanged(_ window: UIWindow) {
+        let value: Int
+        switch window.windowScene?.interfaceOrientation {
+        case .landscapeRight: value = 3 // == UIDeviceOrientation.landscapeLeft
+        case .landscapeLeft: value = 4 // == UIDeviceOrientation.landscapeRight
+        default: value = window.bounds.width > window.bounds.height ? 3 : 1
+        }
+        guard value != lastReportedOrientation else { return }
+        lastReportedOrientation = value
+        MessageCollector.shared.sendMessage(ORMobilePerformanceEvent(name: "orientation", value: UInt64(value)))
+    }
+
     // MARK: - UI Capturing
     func takeScreenshot() {
         guard let window = Self.keyWindow() else { return }
         let size = window.frame.size
         guard size.width > 0 && size.height > 0 else { return }
+        reportOrientationIfChanged(window)
 
         // Drop this frame rather than render one we can't keep up with encoding.
         guard processingQueue.operationCount < maxPendingProcessing else {

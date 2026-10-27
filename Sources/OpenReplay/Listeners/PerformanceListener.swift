@@ -17,7 +17,9 @@ open class PerformanceListener: NSObject {
         UIApplication.didReceiveMemoryWarningNotification,
         UIDevice.batteryLevelDidChangeNotification,
         UIDevice.batteryStateDidChangeNotification,
-        UIDevice.orientationDidChangeNotification,
+        // No UIDevice.orientationDidChangeNotification: "orientation" is reported by
+        // ScreenCapture from the captured window's interface orientation. The physical
+        // device orientation disagrees with the frames whenever the app forces an orientation.
     ]
 
     func start() {
@@ -174,8 +176,6 @@ open class PerformanceListener: NSObject {
             message = ORMobilePerformanceEvent(name: "batteryLevel", value: UInt64(max(0.0, UIDevice.current.batteryLevel)*100))
         case UIDevice.batteryStateDidChangeNotification:
             message = ORMobilePerformanceEvent(name: "batteryState", value: UInt64(UIDevice.current.batteryState.rawValue))
-        case UIDevice.orientationDidChangeNotification:
-            message = ORMobilePerformanceEvent(name: "orientation", value: UInt64(UIDevice.current.orientation.rawValue))
         default: break
         }
         if let message = message {
