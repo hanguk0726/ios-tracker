@@ -58,11 +58,11 @@ class MessageCollector: NSObject {
         super.init()
     }
 
-    /// A new session replaced the previous one in this process (startSession after
+    /// A new session replaces the previous one in this process (startSession after
     /// stop() or a 401). Whatever is still queued was recorded for the old session;
-    /// sent now it would carry the new token and sit in front of the new recording
+    /// sent later it would carry the new token and sit in front of the new recording
     /// with a higher index, and the replayer drops everything after it.
-    /// Called before the new token is installed.
+    /// Called when startSession is called, before the new session queues anything.
     func beginSession() {
         workQueue.sync {
             sessionGeneration += 1

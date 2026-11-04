@@ -94,17 +94,20 @@ class NetworkManager: NSObject {
         return (500...599).contains(status) || status == 429
     }
 
-    private var replacingCollector: MessageCollector?
-
-    /// startSession is about to replace the session recording in this process.
+    /// startSession is about to replace the session recording in this process (the
+    /// app's 2h restart, a JS reload, a 401). The boundary is this call, not the /start
+    /// answer: the app queues the new session's tags and first screen view right after
+    /// calling, before /start answers. What is still queued now belongs to the old
+    /// session and is dropped; until the new token arrives nothing goes out, so neither
+    /// side can carry the other's messages.
     func beginReplacingSession(collector: MessageCollector = .shared) {
-        replacingCollector = hadSessionInProcess ? collector : nil
+        guard hadSessionInProcess else { return }
+        token = nil
+        collector.beginSession()
     }
 
     /// /start answered: this token now owns what gets uploaded.
     func installSession(token: String, sessionId: String, framesSupport: Bool) {
-        replacingCollector?.beginSession()
-        replacingCollector = nil
         hadSessionInProcess = true
         self.token = token
         self.sessionId = sessionId
