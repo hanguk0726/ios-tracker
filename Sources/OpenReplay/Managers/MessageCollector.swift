@@ -26,10 +26,36 @@ class MessageCollector: NSObject {
     private var bufferTimer: Timer?
     private var tick = 0
 
-    override init() {
-        lateMessagesFile = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent("lateMessages.dat")
+    /// Upload seams — production goes through NetworkManager; tests swap them to
+    /// observe what is sent, with which token, and to hold completions.
+    var lateSender: (_ content: Data, _ token: String?, _ completion: @escaping (Bool) -> Void) -> Void = { content, token, completion in
+        NetworkManager.shared.sendLateMessage(content: content, token: token, completion: completion)
+    }
+    var messageSender: (_ content: Data, _ completion: @escaping (_ success: Bool, _ shouldRetry: Bool) -> Void) -> Void = { content, completion in
+        NetworkManager.shared.sendMessage(content: content, completion: completion)
+    }
+
+    /// Token the start-up late send uses, and the token of the session that is
+    /// recording right now. Seams for the same reason as the senders above.
+    var tokenAtStart: () -> String? = { ORUserDefaults.shared.lastToken }
+    var currentToken: () -> String? = { NetworkManager.shared.currentToken }
+
+    override convenience init() {
+        self.init(lateDirectory: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first)
+    }
+
+    init(lateDirectory: URL?) {
+        lateMessagesFile = lateDirectory?.appendingPathComponent("lateMessages.dat")
         super.init()
     }
+
+    /// A new session replaced the previous one in this process.
+    func beginSession() {}
+
+    // MARK: Test probes — read collector state on its own queue.
+    var queuedMessageCount: Int { workQueue.sync { messagesWaiting.count } }
+    var nextIndexForTesting: Int { workQueue.sync { nextMessageIndex } }
+    func waitForQueue() { workQueue.sync {} }
 
     func start() {
         // A pass interrupted by suspension can leave this set; clear it so the
@@ -45,7 +71,7 @@ class MessageCollector: NSObject {
         if let fileUrl = lateMessagesFile,
            FileManager.default.fileExists(atPath: fileUrl.path),
            let lateData = try? Data(contentsOf: fileUrl) {
-            NetworkManager.shared.sendLateMessage(content: lateData) { (success) in
+            lateSender(lateData, tokenAtStart()) { (success) in
                 guard success else { return }
                 try? FileManager.default.removeItem(at: fileUrl)
             }
@@ -311,7 +337,7 @@ class MessageCollector: NSObject {
         }
 
         self.nextMessageIndex += messages.count
-        NetworkManager.shared.sendMessage(content: content) { (success, shouldRetry) in
+        messageSender(content) { (success, shouldRetry) in
             self.workQueue.async {
                 guard success else {
                     guard shouldRetry else {

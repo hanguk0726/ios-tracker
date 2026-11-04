@@ -11,6 +11,8 @@ class NetworkManager: NSObject {
     var baseUrl = "https://api.openreplay.com/ingest"
     public var sessionId: String? = nil
     private var token: String? = nil
+    /// Token of the session currently recording (nil between sessions).
+    var currentToken: String? { token }
     public var writeToFile = false
     private var framesSupport = false
     // Guards against a 401 storm: N queued requests failing at once must not
@@ -175,13 +177,13 @@ class NetworkManager: NSObject {
         }
     }
 
-    func sendLateMessage(content: Data, completion: @escaping (Bool) -> Void) {
+    func sendLateMessage(content: Data, token: String?, completion: @escaping (Bool) -> Void) {
         DebugUtils.log(">>>sending late messages")
         guard var request = createRequest(method: "POST", path: LATE_URL) else {
             completion(false)
             return
         }
-        guard let token = ORUserDefaults.shared.lastToken else {
+        guard let token = token else {
             completion(false)
             DebugUtils.log("! No last token found")
             return

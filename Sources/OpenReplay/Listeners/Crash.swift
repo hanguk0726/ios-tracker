@@ -13,7 +13,7 @@ public class Crashs: NSObject {
         if let fileUrl = Crashs.fileUrl,
            FileManager.default.fileExists(atPath: fileUrl.path),
            let crashData = try? Data(contentsOf: fileUrl) {
-            NetworkManager.shared.sendLateMessage(content: crashData) { (success) in
+            NetworkManager.shared.sendLateMessage(content: crashData, token: ORUserDefaults.shared.lastToken) { (success) in
                 guard success else { return }
                 if FileManager.default.fileExists(atPath: fileUrl.path) {
                     try? FileManager.default.removeItem(at: fileUrl)
@@ -45,7 +45,7 @@ public class Crashs: NSObject {
                                  reason: exception.reason ?? "",
                                  stacktrace: exception.callStackSymbols.joined(separator: "\n")
         )
-        NetworkManager.shared.sendLateMessage(content: message.contentData()) { (success) in
+        NetworkManager.shared.sendLateMessage(content: message.contentData(), token: ORUserDefaults.shared.lastToken) { (success) in
             guard success else { return }
             if let fileUrl = Crashs.fileUrl,
                FileManager.default.fileExists(atPath: fileUrl.path) {
