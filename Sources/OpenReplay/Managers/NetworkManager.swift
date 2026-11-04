@@ -94,11 +94,24 @@ class NetworkManager: NSObject {
         return (500...599).contains(status) || status == 429
     }
 
-    /// `replacesSession`: this start begins a new recording (startSession). When a
-    /// session already ran in this process, the collector drops what it still holds
-    /// for that session before the new token goes in. triggerRecording passes false
-    /// — its buffered messages belong to the session it starts.
-    func createSession(params: [String: AnyHashable], replacesSession: Bool = false, completion: @escaping (ORSessionResponse?) -> Void) {
+    private var replacingCollector: MessageCollector?
+
+    /// startSession is about to replace the session recording in this process.
+    func beginReplacingSession(collector: MessageCollector = .shared) {
+        replacingCollector = hadSessionInProcess ? collector : nil
+    }
+
+    /// /start answered: this token now owns what gets uploaded.
+    func installSession(token: String, sessionId: String, framesSupport: Bool) {
+        replacingCollector?.beginSession()
+        replacingCollector = nil
+        hadSessionInProcess = true
+        self.token = token
+        self.sessionId = sessionId
+        self.framesSupport = framesSupport
+    }
+
+    func createSession(params: [String: AnyHashable], completion: @escaping (ORSessionResponse?) -> Void) {
         guard !writeToFile else {
             self.token = "writeToFile"
             return
@@ -125,13 +138,7 @@ class NetworkManager: NSObject {
             do {
                 let session = try JSONDecoder().decode(ORSessionResponse.self, from: data)
 
-                if replacesSession && self.hadSessionInProcess {
-                    MessageCollector.shared.beginSession()
-                }
-                self.hadSessionInProcess = true
-                self.token = session.token
-                self.sessionId = session.sessionID
-                self.framesSupport = session.framesSupport ?? false
+                self.installSession(token: session.token, sessionId: session.sessionID, framesSupport: session.framesSupport ?? false)
                 ORUserDefaults.shared.lastToken = self.token
                 finish(session)
             } catch {

@@ -4,7 +4,7 @@ import DeviceKit
 class ORSessionRequest: NSObject {
     private static var params = [String: AnyHashable]()
 
-    static func create(doNotRecord: Bool, replacesSession: Bool = false, completion: @escaping (ORSessionResponse?) -> Void) {
+    static func create(doNotRecord: Bool,  completion: @escaping (ORSessionResponse?) -> Void) {
         guard let projectKey = Openreplay.shared.projectKey else { return print("Openreplay: no project key added") }
         
         // Make sure is on the main thread: beginGeneratingDeviceOrientationNotifications need Main thread.
@@ -50,13 +50,13 @@ class ORSessionRequest: NSObject {
                 "width": screenWidth,
                 "height": screenHeight,
             ]
-            callAPI(replacesSession: replacesSession, completion: completion)
+            callAPI(completion: completion)
         }
     }
 
-    private static func callAPI(attempt: Int = 0, replacesSession: Bool, completion: @escaping (ORSessionResponse?) -> Void) {
+    private static func callAPI(attempt: Int = 0, completion: @escaping (ORSessionResponse?) -> Void) {
         guard !params.isEmpty else { return }
-        NetworkManager.shared.createSession(params: params, replacesSession: replacesSession) { (sessionResponse) in
+        NetworkManager.shared.createSession(params: params) { (sessionResponse) in
             guard let sessionResponse = sessionResponse else {
                 let maxAttempts = 10
                 guard attempt < maxAttempts else {
@@ -67,7 +67,7 @@ class ORSessionRequest: NSObject {
                 // backend (and the battery) forever when the server is down.
                 let delay = min(60.0, 5.0 * pow(2.0, Double(attempt)))
                 DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
-                    callAPI(attempt: attempt + 1, replacesSession: replacesSession, completion: completion)
+                    callAPI(attempt: attempt + 1, completion: completion)
                 }
                 return
             }

@@ -14,6 +14,7 @@ final class LateMessageSessionTests: XCTestCase {
     private var token: String? = "T1"
     private var lateSent: [(content: Data, token: String?)] = []
     private var heldCompletions: [(Bool, Bool) -> Void] = []
+    private var sentBatches: [Data] = []
 
     override func setUp() {
         super.setUp()
@@ -22,6 +23,7 @@ final class LateMessageSessionTests: XCTestCase {
         token = "T1"
         lateSent = []
         heldCompletions = []
+        sentBatches = []
     }
 
     override func tearDown() {
@@ -39,7 +41,8 @@ final class LateMessageSessionTests: XCTestCase {
             self.lateSent.append((content, token))
             done(false)
         }
-        collector.messageSender = { [unowned self] _, done in
+        collector.messageSender = { [unowned self] content, done in
+            self.sentBatches.append(content)
             self.heldCompletions.append(done)
         }
         collector.currentToken = { [unowned self] in self.token }
@@ -132,5 +135,49 @@ final class LateMessageSessionTests: XCTestCase {
         collector.waitForQueue()
         collector.stop()
         XCTAssertEqual(collector.queuedMessageCount, 0, "a retry from the previous session must not join the new one")
+    }
+
+    func testBatchDeliveredWhileANewSessionStartsIsNotSentAgainOnTheNextLaunch() {
+        let collector = makeCollector()
+        collector.start()
+        backgroundWithQueuedMessage(collector)
+
+        collector.beginSession()             // the app restarts its session while the upload is in flight
+        heldCompletions.first?(true, false)  // ...and the upload reaches the server
+        collector.waitForQueue()
+        collector.stop()
+
+        let next = makeCollector()           // next launch
+        next.start()
+        next.waitForQueue()
+        next.stop()
+
+        XCTAssertTrue(lateSent.isEmpty, "the batch already reached the server; sending the file again duplicates it")
+    }
+
+    // The app restarts its recording with stop() + startSession() (2h limit, JS reload,
+    // 401). iOS startSession returns before /start answers, and the app queues the new
+    // session's tags and first screen_view right away.
+    func testReplacingASessionKeepsWhatTheNewSessionQueuesBeforeItsTokenArrives() {
+        let network = NetworkManager()
+        network.installSession(token: "T1", sessionId: "S1", framesSupport: false)
+        let collector = makeCollector()
+        collector.start()
+        collector.sendRawMessage(Data([0x01]))   // left over from the old session
+        collector.waitForQueue()
+
+        network.beginReplacingSession(collector: collector)   // startSession called
+        XCTAssertNil(network.currentToken, "until /start answers nothing may go out under the old session's token")
+        collector.sendRawMessage(Data([0x02]))   // new session's first messages
+        collector.waitForQueue()
+
+        network.installSession(token: "T2", sessionId: "S2", framesSupport: false)   // /start answers
+        collector.flush()
+        collector.waitForQueue()
+        collector.stop()
+
+        var expected = ORMobileBatchMeta(firstIndex: 0).contentData()
+        expected.append(Data([0x02]))
+        XCTAssertEqual(sentBatches, [expected], "the new recording starts at index 0 with its own messages and nothing from the old one")
     }
 }

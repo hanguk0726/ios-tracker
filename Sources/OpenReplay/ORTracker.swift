@@ -98,7 +98,8 @@ open class Openreplay: NSObject {
     
     @objc open func startSession(projectKey: String, options: OROptions) {
         self.projectKey = projectKey
-        ORSessionRequest.create(doNotRecord: false, replacesSession: true) { sessionResponse in
+        NetworkManager.shared.beginReplacingSession()
+        ORSessionRequest.create(doNotRecord: false) { sessionResponse in
             guard let sessionResponse = sessionResponse else { return print("Openreplay: no response from /start request") }
             self.sessionStartTs = UInt64(Date().timeIntervalSince1970 * 1000)
             self.sessionData = sessionResponse
