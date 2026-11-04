@@ -42,7 +42,6 @@ final class LateMessageSessionTests: XCTestCase {
         collector.messageSender = { [unowned self] _, done in
             self.heldCompletions.append(done)
         }
-        collector.tokenAtStart = { [unowned self] in self.token }
         collector.currentToken = { [unowned self] in self.token }
         return collector
     }

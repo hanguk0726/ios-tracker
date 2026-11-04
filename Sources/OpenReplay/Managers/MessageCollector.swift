@@ -22,6 +22,16 @@ class MessageCollector: NSObject {
     // competing mutual-exclusion domains and data races (sendingLastMessages).
     private let workQueue = DispatchQueue(label: "com.openreplay.messageCollector", qos: .utility)
     private let lateMessagesFile: URL?
+    /// Token of the session that wrote lateMessages.dat. The file is uploaded on a
+    /// later launch, when the current token already belongs to a new session.
+    private let lateTokenFile: URL?
+    /// Only the first start() of a process can find a batch that never got out
+    /// (the process died). Later starts — foreground resume, a new session — still
+    /// hold that batch in the queue, so the file is a stale copy.
+    private var startedInProcess = false
+    /// Bumped when a new session replaces the previous one in this process; an
+    /// upload that comes back from an older generation is not re-queued.
+    private var sessionGeneration = 0
     private var sendInterval: Timer?
     private var bufferTimer: Timer?
     private var tick = 0
@@ -35,9 +45,7 @@ class MessageCollector: NSObject {
         NetworkManager.shared.sendMessage(content: content, completion: completion)
     }
 
-    /// Token the start-up late send uses, and the token of the session that is
-    /// recording right now. Seams for the same reason as the senders above.
-    var tokenAtStart: () -> String? = { ORUserDefaults.shared.lastToken }
+    /// Token of the session recording right now — stamped on the late file.
     var currentToken: () -> String? = { NetworkManager.shared.currentToken }
 
     override convenience init() {
@@ -46,11 +54,26 @@ class MessageCollector: NSObject {
 
     init(lateDirectory: URL?) {
         lateMessagesFile = lateDirectory?.appendingPathComponent("lateMessages.dat")
+        lateTokenFile = lateDirectory?.appendingPathComponent("lateMessages.token")
         super.init()
     }
 
-    /// A new session replaced the previous one in this process.
-    func beginSession() {}
+    /// A new session replaced the previous one in this process (startSession after
+    /// stop() or a 401). Whatever is still queued was recorded for the old session;
+    /// sent now it would carry the new token and sit in front of the new recording
+    /// with a higher index, and the replayer drops everything after it.
+    /// Called before the new token is installed.
+    func beginSession() {
+        workQueue.sync {
+            sessionGeneration += 1
+            messagesWaiting.removeAll()
+            messagesWaitingBackup.removeAll()
+            waitingBytes = 0
+            imagesWaiting.removeAll()
+            nextMessageIndex = 0
+            sendingLastMessages = false
+        }
+    }
 
     // MARK: Test probes — read collector state on its own queue.
     var queuedMessageCount: Int { workQueue.sync { messagesWaiting.count } }
@@ -60,22 +83,56 @@ class MessageCollector: NSObject {
     func start() {
         // A pass interrupted by suspension can leave this set; clear it so the
         // re-entrancy guard in terminate() can't strand the next background.
-        workQueue.async { self.sendingLastMessages = false }
+        workQueue.async {
+            self.sendingLastMessages = false
+            self.settleLateMessagesOnStart()
+        }
         sendInterval?.orInvalidate()
         sendInterval = Timer.orScheduled(interval: 5) { [weak self] _ in
             self?.flush()
         }
         NotificationCenter.default.addObserver(self, selector: #selector(terminate), name: UIApplication.willResignActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(terminate), name: UIApplication.willTerminateNotification, object: nil)
+    }
 
-        if let fileUrl = lateMessagesFile,
-           FileManager.default.fileExists(atPath: fileUrl.path),
-           let lateData = try? Data(contentsOf: fileUrl) {
-            lateSender(lateData, tokenAtStart()) { (success) in
-                guard success else { return }
-                try? FileManager.default.removeItem(at: fileUrl)
-            }
+    /// Must be called on workQueue.
+    private func settleLateMessagesOnStart() {
+        let firstStart = !startedInProcess
+        startedInProcess = true
+        guard let dataURL = lateMessagesFile, let content = try? Data(contentsOf: dataURL) else { return }
+        guard firstStart else {
+            removeLateFile()
+            return
         }
+        guard let tokenURL = lateTokenFile,
+              let owner = try? String(contentsOf: tokenURL, encoding: .utf8), !owner.isEmpty else {
+            // Written by an SDK version that did not record its session — sending it
+            // under any token we have now would attach it to the wrong recording.
+            removeLateFile()
+            return
+        }
+        lateSender(content, owner) { success in
+            guard success else { return }
+            self.workQueue.async { self.removeLateFile(ifContentIs: content) }
+        }
+    }
+
+    /// Must be called on workQueue.
+    private func writeLateFile(_ content: Data) {
+        guard let dataURL = lateMessagesFile, let tokenURL = lateTokenFile, let token = currentToken() else { return }
+        try? Data(token.utf8).write(to: tokenURL, options: .atomic)
+        try? content.write(to: dataURL, options: .atomic)
+    }
+
+    /// Must be called on workQueue. With `content`, removes the file only if it
+    /// still holds that batch (a later background pass may have replaced it).
+    private func removeLateFile(ifContentIs content: Data? = nil) {
+        guard let dataURL = lateMessagesFile else { return }
+        if let content = content {
+            guard let current = try? Data(contentsOf: dataURL), current == content else { return }
+        }
+        try? FileManager.default.removeItem(at: dataURL)
+        if let tokenURL = lateTokenFile { try? FileManager.default.removeItem(at: tokenURL) }
     }
 
     func cycleBuffer() {
@@ -217,13 +274,14 @@ class MessageCollector: NSObject {
         }
         imagesWaiting.removeFirst()
         imagesSending.append(images)
+        let generation = sessionGeneration
 
         DebugUtils.log("Sending images \(images.name) \(images.data.count)")
         NetworkManager.shared.sendImages(projectKey: projectKey, images: images.data, name: images.name) { (success, shouldRetry) in
             self.workQueue.async {
                 self.imagesSending.removeAll { waiting in images.name == waiting.name }
                 guard success else {
-                    if shouldRetry {
+                    if shouldRetry && generation == self.sessionGeneration {
                         self.imagesWaiting.insert(images, at: 0)
                     } else {
                         DebugUtils.error("Dropping image batch \(images.name) after permanent server rejection")
@@ -332,16 +390,24 @@ class MessageCollector: NSObject {
         messages.forEach { if !$0.isEmpty { content.append($0) } }
         DebugUtils.log("messages batch \(batchMeta.description) bytes=\(content.count)")
 
-        if self.sendingLastMessages, let fileUrl = self.lateMessagesFile {
-            try? content.write(to: fileUrl)
+        if self.sendingLastMessages {
+            self.writeLateFile(content)
         }
+        let generation = self.sessionGeneration
 
         self.nextMessageIndex += messages.count
         messageSender(content) { (success, shouldRetry) in
             self.workQueue.async {
                 guard success else {
+                    guard generation == self.sessionGeneration else {
+                        // Recorded for a session that has since been replaced.
+                        DebugUtils.log("Dropping message batch from a replaced session")
+                        completion?(false)
+                        return
+                    }
                     guard shouldRetry else {
                         DebugUtils.error("Dropping message batch after permanent server rejection")
+                        self.removeLateFile(ifContentIs: content)
                         // The batch is gone for good, so the terminate pass is over:
                         // leaving the flag set would make every later batch rewrite
                         // the late-messages file.
@@ -362,11 +428,11 @@ class MessageCollector: NSObject {
                     completion?(false)
                     return
                 }
+                // Delivered: its late copy must go whether or not this pass is still
+                // flagged — a foreground resume clears the flag while it is in flight.
+                self.removeLateFile(ifContentIs: content)
                 if self.sendingLastMessages {
                     self.sendingLastMessages = false
-                    if let fileUrl = self.lateMessagesFile, FileManager.default.fileExists(atPath: fileUrl.path) {
-                        try? FileManager.default.removeItem(at: fileUrl)
-                    }
                 }
                 completion?(true)
             }
