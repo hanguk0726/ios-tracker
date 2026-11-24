@@ -26,6 +26,14 @@ open class Openreplay: NSObject {
         set { NetworkManager.shared.baseUrl = newValue }
     }
     public var options: OROptions = OROptions.defaults
+    /// Called on the main queue whenever an ingest call fails (non-2xx or no response).
+    /// statusCode is nil for transport failures (offline, timeout, TLS). path is the ingest
+    /// path ("/v1/mobile/i", "/v1/mobile/images", …), sessionId the session the call belonged to.
+    /// Lets the host app report upload loss (the SDK otherwise drops it silently). revita.4
+    public var onUploadFailure: ((_ statusCode: Int?, _ path: String, _ sessionId: String?) -> Void)?
+    /// Called on the main queue when a 401 makes the SDK restart the session.
+    /// oldSessionId is the session whose token was rejected. revita.4
+    public var onSessionRestart: ((_ oldSessionId: String?) -> Void)?
 
     @objc open func start(projectKey: String, options: OROptions) {
         self.options = options

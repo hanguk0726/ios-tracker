@@ -70,10 +70,14 @@ class NetworkManager: NSObject {
                     let respData = String(data: data ?? Data(), encoding: .utf8) ?? ""
                     DebugUtils.error(">>>>>> Error in call \(failedUrl), \n error: \(errorStr) \n response: \(respData)")
 
+                    let failedSessionId = self.sessionId
+                    Openreplay.shared.onUploadFailure?(statusCode, request.url?.path ?? "", failedSessionId)
+
                     if statusCode == 401 {
                         self.token = nil
                         if !self.isRestartingSession {
                             self.isRestartingSession = true
+                            Openreplay.shared.onSessionRestart?(failedSessionId)
                             Openreplay.shared.startSession(projectKey: Openreplay.shared.projectKey ?? "", options: Openreplay.shared.options)
                         }
                     }
